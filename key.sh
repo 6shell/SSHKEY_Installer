@@ -99,3 +99,4 @@ if [ "$os" == "Ubuntu" ] || [ "$os" == "Debian" ]; then
 elif [ "$os" == "CentOS" ] || [ "$os" == "Red Hat Enterprise Linux" ]; then
     systemctl restart sshd
 fi
+rm -rf key.sh
