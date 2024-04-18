@@ -10,7 +10,7 @@ echo '============================
 	Author:Kirito
 ============================'
 cd ~
-mkdir .ssh
+mkdir -p .ssh
 cd .ssh
 curl https://github.com/$1.keys > authorized_keys
 chmod 700 authorized_keys
