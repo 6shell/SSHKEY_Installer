@@ -1,102 +1,167 @@
 #!/bin/bash
 
-# 检测Linux系统类型
-if [ -f /etc/os-release ]; then
-    # 使用lsb_release命令来获取系统信息
-    os=$(lsb_release -si)
-elif [ -f /etc/redhat-release ]; then
-    os="CentOS"
-else
-    os="Unknown"
-fi
+# SSH 密钥自动配置脚本（专为 6shell 优化）
+# 功能：从 GitHub 获取 6shell 的公钥并配置 SSH 密钥登录
+# 支持系统：CentOS/RHEL, Debian, Ubuntu
 
-# 根据系统类型执行不同的操作
-case "$os" in
-    "Ubuntu" | "Debian")
-        apt-get update -y
-        apt-get install curl jq -y
-        ;;
-    "CentOS" | "Red Hat Enterprise Linux")
-        yum clean all
-        yum makecache
-        yum install curl jq -y
-        ;;
-    *)
-        echo "Unsupported or unknown Linux distribution."
-        exit 1
-        ;;
-esac
+# 颜色定义
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
 
-echo '============================
-      SSH Key Installer
-     V1.0 Alpha
-     Author: Kirito
-============================'
+# 配置参数
+GITHUB_USER="6shell"  # 直接指定GitHub用户名
+SSH_DIR="/root/.ssh"
+AUTH_KEYS="${SSH_DIR}/authorized_keys"
+SSHD_CONFIG="/etc/ssh/sshd_config"
 
-# 创建.ssh目录并切换到该目录
-mkdir -p ~/.ssh
-cd ~/.ssh
-
-# GitHub用户名
-read -p "请输入 GitHub 用户名: " github_username
-
-# GitHub API URL
-url="https://api.github.com/users/$github_username/keys"
-
-# 发送 GET 请求获取公钥列表，并使用 jq 从 JSON 响应中提取公钥信息
-keys=$(curl -s "$url")
-
-# 检查是否成功获取到公钥列表
-if [ -z "$keys" ]; then
-    echo "从GitHub获取SSH-KEY失败."
-    exit 1
-fi
-
-# 计数器
-count=1
-
-# 显示公钥列表，并将 id 和 key 提取出来
-echo "公钥列表："
-echo "$keys" | jq -r '.[] | "\(.id)=\(.key)"' |
-while IFS= read -r line; do
-    echo "$count: $line"
-    ((count++))
-done
-
-# 用户选择公钥
-read -p "请选择你需要使用的SSH-KEY(输入编号): " choice
-
-# 检查用户选择
-if [[ "$choice" =~ ^[0-9]+$ ]]; then
-    selected_key=$(echo "$keys" | jq -r ".[$choice - 1].key")
-    if [ -n "$selected_key" ]; then
-        echo "已选择SSH-KEY：$selected_key"
-        echo "$selected_key" > authorized_keys
-        echo "已将SSH-KEY写入 authorized_keys 文件."
-    else
-        echo "无效的选择."
+# 初始化检查
+init_check() {
+    # 检查root权限
+    if [ "$(id -u)" -ne 0 ]; then
+        echo -e "${RED}错误：此脚本需要root权限执行${NC}"
         exit 1
     fi
-else
-    echo "无效的选择."
-    exit 1
-fi
 
-# 返回用户主目录
-cd ~
+    # 检查网络连接
+    if ! curl -Is https://github.com | head -n 1 | grep -q "200"; then
+        echo -e "${RED}错误：无法连接到GitHub，请检查网络${NC}"
+        exit 1
+    fi
+}
 
-# 修改sshd_config文件并重启SSH服务
-sed -i "/PasswordAuthentication no/c PasswordAuthentication no" /etc/ssh/sshd_config
-sed -i "/RSAAuthentication no/c RSAAuthentication yes" /etc/ssh/sshd_config
-sed -i "/PubkeyAuthentication no/c PubkeyAuthentication yes" /etc/ssh/sshd_config
-sed -i "/PasswordAuthentication yes/c PasswordAuthentication no" /etc/ssh/sshd_config
-sed -i "/RSAAuthentication yes/c RSAAuthentication yes" /etc/ssh/sshd_config
-sed -i "/PubkeyAuthentication yes/c PubkeyAuthentication yes" /etc/ssh/sshd_config
+# 检测系统类型
+detect_os() {
+    if [ -f /etc/redhat-release ]; then
+        echo "centos"
+    elif grep -qi "debian" /etc/os-release; then
+        echo "debian"
+    elif grep -qi "ubuntu" /etc/os-release; then
+        echo "ubuntu"
+    else
+        echo "unknown"
+    fi
+}
 
-# 根据不同系统重启SSH服务
-if [ "$os" == "Ubuntu" ] || [ "$os" == "Debian" ]; then
-    service ssh restart
-elif [ "$os" == "CentOS" ] || [ "$os" == "Red Hat Enterprise Linux" ]; then
-    systemctl restart sshd
-fi
-rm -rf key.sh
+# 安装必要软件
+install_deps() {
+    local os_type=$1
+    
+    echo -e "${BLUE}正在安装必要软件...${NC}"
+    
+    case $os_type in
+        centos)
+            yum install -y curl openssh-server openssh-clients && \
+            systemctl enable sshd && \
+            systemctl start sshd
+            ;;
+        debian|ubuntu)
+            apt-get update && \
+            apt-get install -y curl openssh-server && \
+            systemctl enable ssh && \
+            systemctl start ssh
+            ;;
+        *)
+            echo -e "${RED}不支持的Linux发行版${NC}"
+            exit 1
+            ;;
+    esac
+
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}软件安装失败${NC}"
+        exit 1
+    fi
+}
+
+# 获取GitHub公钥
+get_github_key() {
+    local temp_file=$(mktemp)
+    
+    echo -e "${BLUE}正在获取 ${GITHUB_USER} 的GitHub公钥...${NC}"
+    
+    if ! curl -s "https://github.com/${GITHUB_USER}.keys" -o "$temp_file"; then
+        echo -e "${RED}错误：获取公钥失败${NC}"
+        rm -f "$temp_file"
+        exit 1
+    fi
+
+    # 验证公钥
+    if [ ! -s "$temp_file" ] || ! grep -q "ssh-" "$temp_file"; then
+        echo -e "${RED}错误：无效的公钥或账户未添加SSH密钥${NC}"
+        rm -f "$temp_file"
+        exit 1
+    fi
+
+    echo "$temp_file"
+}
+
+# 配置SSH
+setup_ssh() {
+    local key_file=$1
+    
+    echo -e "${BLUE}正在配置SSH...${NC}"
+
+    # 创建.ssh目录
+    mkdir -p "$SSH_DIR" && chmod 700 "$SSH_DIR"
+    
+    # 备份原有密钥
+    if [ -f "$AUTH_KEYS" ]; then
+        cp "$AUTH_KEYS" "${AUTH_KEYS}.bak-$(date +%Y%m%d%H%M%S)"
+        echo -e "${YELLOW}已备份原有authorized_keys文件${NC}"
+    fi
+
+    # 添加新密钥
+    {
+        echo -e "\n# 来自 GitHub 用户 ${GITHUB_USER} 的公钥（自动添加于 $(date)）"
+        cat "$key_file"
+    } >> "$AUTH_KEYS"
+    
+    chmod 600 "$AUTH_KEYS"
+    rm -f "$key_file"
+
+    # 修改SSH配置
+    cp "$SSHD_CONFIG" "${SSHD_CONFIG}.bak"
+    sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication no/' "$SSHD_CONFIG"
+    sed -i 's/^#*PubkeyAuthentication.*/PubkeyAuthentication yes/' "$SSHD_CONFIG"
+    sed -i 's/^#*PermitRootLogin.*/PermitRootLogin prohibit-password/' "$SSHD_CONFIG"
+
+    # 重启SSH服务
+    if systemctl restart sshd || systemctl restart ssh; then
+        echo -e "${GREEN}SSH服务重启成功${NC}"
+    else
+        echo -e "${RED}警告：SSH服务重启失败，请手动重启${NC}"
+    fi
+}
+
+# 验证配置
+verify_setup() {
+    echo -e "\n${BLUE}验证配置...${NC}"
+    echo -e "当前 authorized_keys 内容："
+    grep -v "^#" "$AUTH_KEYS" | while read -r line; do
+        echo -e "${GREEN}√ 已添加密钥: ${line:0:30}...${NC}"
+    done
+
+    echo -e "\n${YELLOW}请在新终端窗口中测试SSH连接："
+    echo -e "  ssh root@您的服务器IP"
+    echo -e "确认能正常登录后再关闭当前会话！${NC}"
+}
+
+# 主流程
+main() {
+    init_check
+    
+    local os_type=$(detect_os)
+    echo -e "${GREEN}检测到系统: ${os_type}${NC}"
+    
+    install_deps "$os_type"
+    local key_file=$(get_github_key)
+    setup_ssh "$key_file"
+    verify_setup
+    
+    echo -e "\n${GREEN}SSH密钥配置完成！${NC}"
+}
+
+# 执行主函数
+main
