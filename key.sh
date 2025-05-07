@@ -79,17 +79,17 @@ install_deps() {
 get_github_key() {
     local temp_file=$(mktemp)
     
-    echo -e "${BLUE}正在获取 ${GITHUB_USER} 的GitHub公钥...${NC}"
+    echo -e "${BLUE}正在获取 ${GITHUB_USER} 的GitHub公钥...${NC}" >&2
     
     if ! curl -s "https://github.com/${GITHUB_USER}.keys" -o "$temp_file"; then
-        echo -e "${RED}错误：获取公钥失败${NC}"
+        echo -e "${RED}错误：获取公钥失败${NC}" >&2
         rm -f "$temp_file"
         exit 1
     fi
 
     # 验证公钥
     if [ ! -s "$temp_file" ] || ! grep -q "ssh-" "$temp_file"; then
-        echo -e "${RED}错误：无效的公钥或账户未添加SSH密钥${NC}"
+        echo -e "${RED}错误：无效的公钥或账户未添加SSH密钥${NC}" >&2
         rm -f "$temp_file"
         exit 1
     fi
